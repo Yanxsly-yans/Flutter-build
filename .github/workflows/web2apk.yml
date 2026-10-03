@@ -12,6 +12,12 @@ on:
       icon_url:
         description: "URL icon (PNG/JPG)"
         required: true
+  repository_dispatch:
+    types: [web2apk]
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   build:
@@ -30,21 +36,22 @@ jobs:
 
       - name: Buat project WebView
         env:
-          WEB_URL: ${{ inputs.web_url }}
-          APP_NAME: ${{ inputs.app_name }}
-          ICON_URL: ${{ inputs.icon_url }}
+          WEB_URL: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.web_url || inputs.web_url }}
+          APP_NAME: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.app_name || inputs.app_name }}
+          ICON_URL: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.icon_url || inputs.icon_url }}
         run: |
-          flutter create --org com.webapk --project-name webapp app
+          set -euo pipefail
+          test -n "$WEB_URL"
+          test -n "$APP_NAME"
+          test -n "$ICON_URL"
+          flutter create --org com.webapk --project-name webapp --platforms=android app
           cd app
           flutter pub add webview_flutter
           flutter pub add --dev flutter_launcher_icons
-
           mkdir -p assets
-          curl -fL -o assets/icon.png "$ICON_URL"
-
+          curl --fail --location --retry 3 --retry-delay 2 -o assets/icon.png "$ICON_URL"
           printf '\nflutter_launcher_icons:\n  android: true\n  ios: false\n  image_path: "assets/icon.png"\n' >> pubspec.yaml
-
-          cat > lib/main.dart <<DART
+          cat > lib/main.dart <<'DART'
           import 'package:flutter/material.dart';
           import 'package:webview_flutter/webview_flutter.dart';
 
@@ -57,19 +64,23 @@ jobs:
           }
 
           class _WebAppState extends State<WebApp> {
-            late final WebViewController c;
+            late final WebViewController controller;
             @override
             void initState() {
               super.initState();
-              c = WebViewController()
+              controller = WebViewController()
                 ..setJavaScriptMode(JavaScriptMode.unrestricted)
-                ..loadRequest(Uri.parse('${WEB_URL}'));
+                ..setNavigationDelegate(NavigationDelegate(
+                  onWebResourceError: (error) {},
+                ))
+                ..loadRequest(Uri.parse(r'''$WEB_URL'''));
             }
             @override
             Widget build(BuildContext context) {
               return MaterialApp(
                 debugShowCheckedModeBanner: false,
-                home: Scaffold(body: SafeArea(child: WebViewWidget(controller: c))),
+                theme: ThemeData(useMaterial3: true),
+                home: Scaffold(body: SafeArea(child: WebViewWidget(controller: controller))),
               );
             }
           }
@@ -80,13 +91,14 @@ jobs:
           sed -i "s/android:label=\"[^\"]*\"/android:label=\"$SAFE_NAME\"/" "$MANIFEST"
           sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <application android:usesCleartextTraffic="true"#' "$MANIFEST"
           sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/; s/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/' android/app/build.gradle*
-
           flutter pub get
           dart run flutter_launcher_icons
 
       - name: Build APK
         working-directory: app
-        run: flutter build apk --release
+        run: |
+          set -euo pipefail
+          flutter build apk --release
 
       - uses: actions/upload-artifact@v4
         with:
