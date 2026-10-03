@@ -1,0 +1,62 @@
+name: Build Flutter APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: "URL ZIP project"
+        required: true
+      tag:
+        description: "Tag release"
+        required: true
+      build_type:
+        description: "release / debug"
+        required: false
+        default: "release"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Download dan ekstrak ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZIP_URL: ${{ inputs.zip_url }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          mkdir -p dl src
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "*.zip" --dir dl \
+            || curl -fL -o dl/project.zip "$ZIP_URL"
+          unzip -q dl/*.zip -d src
+          PUB=$(find src -name pubspec.yaml -not -path "*/.*" -not -path "*/build/*" | awk '{print length, $0}' | sort -n | head -1 | cut -d' ' -f2-)
+          if [ -z "$PUB" ]; then echo "pubspec.yaml tidak ditemukan di ZIP"; exit 1; fi
+          echo "PROJECT_DIR=$(dirname "$PUB")" >> "$GITHUB_ENV"
+
+      - name: Build APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        env:
+          BUILD_TYPE: ${{ inputs.build_type }}
+        run: |
+          flutter pub get
+          if [ "$BUILD_TYPE" = "debug" ]; then
+            flutter build apk --debug
+          else
+            flutter build apk --release
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-build
+          path: ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
