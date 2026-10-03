@@ -1,0 +1,95 @@
+name: Web to APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      web_url:
+        description: "URL website"
+        required: true
+      app_name:
+        description: "Nama aplikasi"
+        required: true
+      icon_url:
+        description: "URL icon (PNG/JPG)"
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Buat project WebView
+        env:
+          WEB_URL: ${{ inputs.web_url }}
+          APP_NAME: ${{ inputs.app_name }}
+          ICON_URL: ${{ inputs.icon_url }}
+        run: |
+          flutter create --org com.webapk --project-name webapp app
+          cd app
+          flutter pub add webview_flutter
+          flutter pub add --dev flutter_launcher_icons
+
+          mkdir -p assets
+          curl -fL -o assets/icon.png "$ICON_URL"
+
+          printf '\nflutter_launcher_icons:\n  android: true\n  ios: false\n  image_path: "assets/icon.png"\n' >> pubspec.yaml
+
+          cat > lib/main.dart <<DART
+          import 'package:flutter/material.dart';
+          import 'package:webview_flutter/webview_flutter.dart';
+
+          void main() => runApp(const WebApp());
+
+          class WebApp extends StatefulWidget {
+            const WebApp({super.key});
+            @override
+            State<WebApp> createState() => _WebAppState();
+          }
+
+          class _WebAppState extends State<WebApp> {
+            late final WebViewController c;
+            @override
+            void initState() {
+              super.initState();
+              c = WebViewController()
+                ..setJavaScriptMode(JavaScriptMode.unrestricted)
+                ..loadRequest(Uri.parse('${WEB_URL}'));
+            }
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                debugShowCheckedModeBanner: false,
+                home: Scaffold(body: SafeArea(child: WebViewWidget(controller: c))),
+              );
+            }
+          }
+          DART
+
+          SAFE_NAME=$(printf '%s' "$APP_NAME" | tr -d '"&/\\<>')
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          sed -i "s/android:label=\"[^\"]*\"/android:label=\"$SAFE_NAME\"/" "$MANIFEST"
+          sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <application android:usesCleartextTraffic="true"#' "$MANIFEST"
+          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/; s/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/' android/app/build.gradle*
+
+          flutter pub get
+          dart run flutter_launcher_icons
+
+      - name: Build APK
+        working-directory: app
+        run: flutter build apk --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-build
+          path: app/build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
