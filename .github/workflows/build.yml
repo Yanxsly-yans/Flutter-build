@@ -13,6 +13,12 @@ on:
         description: "release / debug"
         required: false
         default: "release"
+  repository_dispatch:
+    types: [flutter_build]
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   build:
@@ -32,12 +38,17 @@ jobs:
       - name: Download dan ekstrak ZIP
         env:
           GH_TOKEN: ${{ github.token }}
-          ZIP_URL: ${{ inputs.zip_url }}
-          TAG: ${{ inputs.tag }}
+          ZIP_URL: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.zip_url || inputs.zip_url }}
+          TAG: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.tag || inputs.tag }}
         run: |
+          set -euo pipefail
           mkdir -p dl src
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "*.zip" --dir dl \
-            || curl -fL -o dl/project.zip "$ZIP_URL"
+          test -n "$ZIP_URL"
+          if printf '%s' "$ZIP_URL" | grep -q '^https://api.github.com/repos/'; then
+            gh api "$ZIP_URL" --jq '.content' | base64 --decode > dl/project.zip
+          else
+            curl --fail --location --retry 3 --retry-delay 2 -o dl/project.zip "$ZIP_URL"
+          fi
           unzip -q dl/*.zip -d src
           PUB=$(find src -name pubspec.yaml -not -path "*/.*" -not -path "*/build/*" | awk '{print length, $0}' | sort -n | head -1 | cut -d' ' -f2-)
           if [ -z "$PUB" ]; then echo "pubspec.yaml tidak ditemukan di ZIP"; exit 1; fi
@@ -46,8 +57,9 @@ jobs:
       - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
         env:
-          BUILD_TYPE: ${{ inputs.build_type }}
+          BUILD_TYPE: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.build_type || inputs.build_type }}
         run: |
+          set -euo pipefail
           flutter pub get
           if [ "$BUILD_TYPE" = "debug" ]; then
             flutter build apk --debug
